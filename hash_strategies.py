@@ -34,18 +34,57 @@ class ChainedHashMap(Generic[K, V]):
 
     def insert(self, key: K, value: V) -> None:
         """Insert, or update in place if `key` already exists. Resize (double + rehash) once load factor > 0.75."""
-        # TODO
-        raise NotImplementedError
+        buckets = self._buckets
+        index = hash(key) % len(buckets)
+        node = buckets[index]
+        while node is not None:
+            if node.key == key:
+                node.value = value
+                return
+            node = node.next
+
+        node = _ChainNode(key, value)
+        node.next = buckets[index]
+        buckets[index] = node
+        self._count += 1
+
+        if self._count * 4 > len(buckets) * 3:
+            new_size = len(buckets) * 2
+            new_buckets: List[Optional[_ChainNode[K, V]]] = [None] * new_size
+            for node in buckets:
+                while node is not None:
+                    next_node = node.next
+                    index = hash(node.key) % new_size
+                    node.next = new_buckets[index]
+                    new_buckets[index] = node
+                    node = next_node
+            self._buckets = new_buckets
 
     def get(self, key: K) -> V:
         """Return the value for `key`. Raise KeyError if missing."""
-        # TODO
-        raise NotImplementedError
+        node = self._buckets[hash(key) % len(self._buckets)]
+        while node is not None:
+            if node.key == key:
+                return node.value
+            node = node.next
+        raise KeyError(key)
 
     def delete(self, key: K) -> None:
         """Remove `key`. Raise KeyError if missing."""
-        # TODO
-        raise NotImplementedError
+        index = hash(key) % len(self._buckets)
+        node = self._buckets[index]
+        previous = None
+        while node is not None:
+            if node.key == key:
+                if previous is None:
+                    self._buckets[index] = node.next
+                else:
+                    previous.next = node.next
+                self._count -= 1
+                return
+            previous = node
+            node = node.next
+        raise KeyError(key)
 
 
 class LinearProbingHashMap(Generic[K, V]):
@@ -61,18 +100,73 @@ class LinearProbingHashMap(Generic[K, V]):
 
     def insert(self, key: K, value: V) -> None:
         """Resize (double + rehash) once load factor > 0.7."""
-        # TODO
-        raise NotImplementedError
+        keys = self._keys
+        size = len(keys)
+        index = hash(key) % size
+        first_deleted = -1
+        for _ in range(size):
+            stored_key = keys[index]
+            if stored_key is None:
+                break
+            if stored_key is _TOMBSTONE:
+                if first_deleted == -1:
+                    first_deleted = index
+            elif stored_key == key:
+                self._values[index] = value
+                return
+            index = (index + 1) % size
+
+        if first_deleted != -1:
+            index = first_deleted
+        keys[index] = key
+        self._values[index] = value
+        self._count += 1
+
+        if self._count * 10 > size * 7:
+            new_size = size * 2
+            new_keys: List[object] = [None] * new_size
+            new_values: List[Optional[V]] = [None] * new_size
+            for old_index, stored_key in enumerate(keys):
+                if stored_key is None or stored_key is _TOMBSTONE:
+                    continue
+                index = hash(stored_key) % new_size
+                while new_keys[index] is not None:
+                    index = (index + 1) % new_size
+                new_keys[index] = stored_key
+                new_values[index] = self._values[old_index]
+            self._keys = new_keys
+            self._values = new_values
 
     def search(self, key: K) -> V:
         """Return the value for `key`. Raise KeyError if missing."""
-        # TODO
-        raise NotImplementedError
+        keys = self._keys
+        size = len(keys)
+        index = hash(key) % size
+        for _ in range(size):
+            stored_key = keys[index]
+            if stored_key is None:
+                break
+            if stored_key is not _TOMBSTONE and stored_key == key:
+                return self._values[index]
+            index = (index + 1) % size
+        raise KeyError(key)
 
     def delete(self, key: K) -> None:
         """Remove `key` using a tombstone (not None) so later probes don't stop early. Raise KeyError if missing."""
-        # TODO
-        raise NotImplementedError
+        keys = self._keys
+        size = len(keys)
+        index = hash(key) % size
+        for _ in range(size):
+            stored_key = keys[index]
+            if stored_key is None:
+                break
+            if stored_key is not _TOMBSTONE and stored_key == key:
+                keys[index] = _TOMBSTONE
+                self._values[index] = None
+                self._count -= 1
+                return
+            index = (index + 1) % size
+        raise KeyError(key)
 
 
 class QuadraticProbingHashMap(Generic[K, V]):
@@ -101,15 +195,83 @@ class QuadraticProbingHashMap(Generic[K, V]):
 
     def insert(self, key: K, value: V) -> None:
         """Resize (grow + rehash) once load factor > 0.7 -- see the pitfall note above."""
-        # TODO
-        raise NotImplementedError
+        key_hash = hash(key)
+        while True:
+            keys = self._keys
+            size = len(keys)
+            first_available = -1
+            for step in range(size):
+                index = (key_hash + step * step) % size
+                stored_key = keys[index]
+                if stored_key is None:
+                    if first_available == -1:
+                        first_available = index
+                    break
+                if stored_key is _TOMBSTONE:
+                    if first_available == -1:
+                        first_available = index
+                elif stored_key == key:
+                    self._values[index] = value
+                    return
+
+            if first_available != -1 and (self._count + 1) * 10 <= size * 7:
+                keys[first_available] = key
+                self._values[first_available] = value
+                self._count += 1
+                return
+
+            new_size = max(3, size * 2 + 1)
+            while True:
+                divisor = 3
+                while divisor * divisor <= new_size and new_size % divisor:
+                    divisor += 2
+                if divisor * divisor > new_size:
+                    break
+                new_size += 2
+
+            new_keys: List[object] = [None] * new_size
+            new_values: List[Optional[V]] = [None] * new_size
+            for old_index, stored_key in enumerate(keys):
+                if stored_key is None or stored_key is _TOMBSTONE:
+                    continue
+                stored_hash = hash(stored_key)
+                step = 0
+                index = stored_hash % new_size
+                while new_keys[index] is not None:
+                    step += 1
+                    index = (stored_hash + step * step) % new_size
+                new_keys[index] = stored_key
+                new_values[index] = self._values[old_index]
+            self._keys = new_keys
+            self._values = new_values
 
     def search(self, key: K) -> V:
         """Return the value for `key`. Raise KeyError if missing."""
-        # TODO
-        raise NotImplementedError
+        keys = self._keys
+        size = len(keys)
+        key_hash = hash(key)
+        for step in range(size):
+            index = (key_hash + step * step) % size
+            stored_key = keys[index]
+            if stored_key is None:
+                break
+            if stored_key is not _TOMBSTONE and stored_key == key:
+                return self._values[index]
+        raise KeyError(key)
 
     def delete(self, key: K) -> None:
         """Remove `key` using a tombstone. Raise KeyError if missing."""
-        # TODO
-        raise NotImplementedError
+        keys = self._keys
+        size = len(keys)
+        key_hash = hash(key)
+        for step in range(size):
+            index = (key_hash + step * step) % size
+            stored_key = keys[index]
+            if stored_key is None:
+                break
+            if stored_key is not _TOMBSTONE and stored_key == key:
+                keys[index] = _TOMBSTONE
+                self._values[index] = None
+                self._count -= 1
+                return
+        raise KeyError(key)
